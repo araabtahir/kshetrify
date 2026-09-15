@@ -1,20 +1,38 @@
+import os
+
+os.environ["FLAGS_use_mkldnn"] = "0"
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
 from fastapi import FastAPI, UploadFile, File
 from paddleocr import PaddleOCR
 import tempfile
-import os
 import json
 import re
 
 app = FastAPI(title="Kshetrify AI Service")
 
-ocr = PaddleOCR(
-    lang="en",
-    text_detection_model_name="PP-OCRv5_mobile_det",
-    text_recognition_model_name="en_PP-OCRv5_mobile_rec",
-    use_doc_orientation_classify=False,
-    use_doc_unwarping=False,
-    use_textline_orientation=False
-)
+ocr = None
+
+def get_ocr():
+    global ocr
+
+    if ocr is None:
+        print("Loading PaddleOCR mobile models...")
+
+        ocr = PaddleOCR(
+            text_detection_model_name="PP-OCRv5_mobile_det",
+            text_recognition_model_name="en_PP-OCRv5_mobile_rec",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+            device="cpu",
+            enable_mkldnn=False,
+            cpu_threads=2
+        )
+
+        print("PaddleOCR loaded successfully.")
+
+    return ocr
 
 
 @app.get("/")
@@ -103,8 +121,8 @@ def classify_document(text):
         "matched_terms": matched_terms
     }
 
-def extract_fields(text):
 
+def extract_fields(text):
     fields = {
         "owner_name": {"value": None, "confidence": 0.0},
         "survey_number": {"value": None, "confidence": 0.0},
@@ -119,7 +137,7 @@ def extract_fields(text):
     lines = []
 
     for item in text:
-        clean = " ".join(item.split()).strip()
+        clean = " ".join(str(item).split()).strip()
         if clean:
             lines.append(clean)
 
@@ -192,13 +210,14 @@ def extract_fields(text):
             "confidence": 0.95
         }
 
-    if re.search(
-        r"\bhectares?\b",
-        full_text,
-        re.IGNORECASE
-    ):
+    if re.search(r"\bhectares?\b", full_text, re.IGNORECASE):
         fields["area_unit"] = {
             "value": "Hectare",
+            "confidence": 0.95
+        }
+    elif re.search(r"\bacres?\b", full_text, re.IGNORECASE):
+        fields["area_unit"] = {
+            "value": "Acre",
             "confidence": 0.95
         }
 
@@ -266,6 +285,7 @@ def extract_fields(text):
 
     return fields
 
+
 @app.post("/ocr")
 async def perform_ocr(file: UploadFile = File(...)):
 
@@ -275,18 +295,27 @@ async def perform_ocr(file: UploadFile = File(...)):
         }
 
     suffix = os.path.splitext(file.filename)[1]
-
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=suffix
-    ) as temp:
-
-        contents = await file.read()
-        temp.write(contents)
-        temp_path = temp.name
+    temp_path = None
 
     try:
-        results = ocr.predict(temp_path)
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix
+        ) as temp:
+
+            contents = await file.read()
+            temp.write(contents)
+            temp_path = temp.name
+
+        print(f"OCR request received: {file.filename}")
+
+        ocr_engine = get_ocr()
+
+        print("Starting OCR inference...")
+
+        results = ocr_engine.predict(temp_path)
+
+        print("OCR inference completed.")
 
         extracted_text = []
 
@@ -294,19 +323,30 @@ async def perform_ocr(file: UploadFile = File(...)):
             try:
                 result_data = result.json
 
+                if callable(result_data):
+                    result_data = result_data()
+
                 if isinstance(result_data, str):
                     result_data = json.loads(result_data)
 
-                if "res" in result_data:
-                    res = result_data["res"]
+                if isinstance(result_data, dict):
+                    if "res" in result_data:
+                        res = result_data["res"]
 
-                    if "rec_texts" in res:
-                        extracted_text.extend(
-                            res["rec_texts"]
-                        )
+                        if "rec_texts" in res:
+                            extracted_text.extend(
+                                res["rec_texts"]
+                            )
 
             except Exception as error:
-                print("OCR result error:", error)
+                print(
+                    "OCR result parsing error:",
+                    error
+                )
+
+        print(
+            f"Extracted {len(extracted_text)} text lines."
+        )
 
         classification = classify_document(
             extracted_text
@@ -325,6 +365,25 @@ async def perform_ocr(file: UploadFile = File(...)):
             "text": extracted_text
         }
 
+    except Exception as error:
+
+        print(
+            "OCR ERROR:",
+            repr(error)
+        )
+
+        return {
+            "error": "OCR processing failed",
+            "details": str(error)
+        }
+
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception as error:
+                print(
+                    "Temporary file cleanup error:",
+                    error
+                )
