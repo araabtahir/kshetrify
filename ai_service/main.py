@@ -7,7 +7,12 @@ import re
 
 app = FastAPI(title="Kshetrify AI Service")
 
-ocr = PaddleOCR(lang="en")
+ocr = PaddleOCR(
+    lang="en",
+    use_doc_orientation_classify=False,
+    use_doc_unwarping=False,
+    use_textline_orientation=False
+)
 
 
 @app.get("/")
