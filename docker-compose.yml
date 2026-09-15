@@ -1,0 +1,24 @@
+services:
+
+  postgres:
+    image: postgis/postgis:18-3.6
+
+    platform: linux/amd64
+
+    container_name: kshetrify-postgres
+
+    environment:
+      POSTGRES_DB: kshetrify
+      POSTGRES_USER: kshetrify_user
+      POSTGRES_PASSWORD: kshetrify_pass
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - kshetrify_pgdata:/var/lib/postgresql
+
+    restart: unless-stopped
+
+volumes:
+  kshetrify_pgdata:
