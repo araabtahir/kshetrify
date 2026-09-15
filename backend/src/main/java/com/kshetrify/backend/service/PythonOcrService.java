@@ -15,7 +15,10 @@ public class PythonOcrService {
 
     public PythonOcrService() {
         this.restClient = RestClient.builder()
-                .baseUrl("http://localhost:8000")
+                .baseUrl(System.getenv().getOrDefault(
+    "AI_SERVICE_URL",
+    "http://localhost:8000"
+))
                 .build();
     }
 
