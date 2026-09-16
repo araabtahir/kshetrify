@@ -1,38 +1,12 @@
-import os
-
-os.environ["FLAGS_use_mkldnn"] = "0"
-os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-
 from fastapi import FastAPI, UploadFile, File
-from paddleocr import PaddleOCR
 import tempfile
-import json
+import os
 import re
+import cv2
+import pytesseract
+from PIL import Image
 
 app = FastAPI(title="Kshetrify AI Service")
-
-ocr = None
-
-def get_ocr():
-    global ocr
-
-    if ocr is None:
-        print("Loading PaddleOCR mobile models...")
-
-        ocr = PaddleOCR(
-            text_detection_model_name="PP-OCRv5_mobile_det",
-            text_recognition_model_name="en_PP-OCRv5_mobile_rec",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            device="cpu",
-            enable_mkldnn=False,
-            cpu_threads=2
-        )
-
-        print("PaddleOCR loaded successfully.")
-
-    return ocr
 
 
 @app.get("/")
@@ -309,44 +283,54 @@ async def perform_ocr(file: UploadFile = File(...)):
 
         print(f"OCR request received: {file.filename}")
 
-        ocr_engine = get_ocr()
+        image = cv2.imread(temp_path)
 
-        print("Starting OCR inference...")
+        if image is None:
+            return {
+                "error": "Unable to read image"
+            }
 
-        results = ocr_engine.predict(temp_path)
-
-        print("OCR inference completed.")
-
-        extracted_text = []
-
-        for result in results:
-            try:
-                result_data = result.json
-
-                if callable(result_data):
-                    result_data = result_data()
-
-                if isinstance(result_data, str):
-                    result_data = json.loads(result_data)
-
-                if isinstance(result_data, dict):
-                    if "res" in result_data:
-                        res = result_data["res"]
-
-                        if "rec_texts" in res:
-                            extracted_text.extend(
-                                res["rec_texts"]
-                            )
-
-            except Exception as error:
-                print(
-                    "OCR result parsing error:",
-                    error
-                )
-
-        print(
-            f"Extracted {len(extracted_text)} text lines."
+        gray = cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2GRAY
         )
+
+        gray = cv2.resize(
+            gray,
+            None,
+            fx=1.5,
+            fy=1.5,
+            interpolation=cv2.INTER_CUBIC
+        )
+
+        _, processed = cv2.threshold(
+            gray,
+            0,
+            255,
+            cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+        processed_path = temp_path + "_processed.png"
+
+        cv2.imwrite(
+            processed_path,
+            processed
+        )
+
+        print("Starting Tesseract OCR...")
+
+        ocr_text = pytesseract.image_to_string(
+            Image.open(processed_path),
+            config="--psm 6"
+        )
+
+        print("Tesseract OCR completed.")
+
+        extracted_text = [
+            line.strip()
+            for line in ocr_text.splitlines()
+            if line.strip()
+        ]
 
         classification = classify_document(
             extracted_text
@@ -366,11 +350,7 @@ async def perform_ocr(file: UploadFile = File(...)):
         }
 
     except Exception as error:
-
-        print(
-            "OCR ERROR:",
-            repr(error)
-        )
+        print("OCR ERROR:", repr(error))
 
         return {
             "error": "OCR processing failed",
@@ -378,12 +358,14 @@ async def perform_ocr(file: UploadFile = File(...)):
         }
 
     finally:
-
         if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception as error:
-                print(
-                    "Temporary file cleanup error:",
-                    error
-                )
+            os.remove(temp_path)
+
+        processed_path = (
+            temp_path + "_processed.png"
+            if temp_path
+            else None
+        )
+
+        if processed_path and os.path.exists(processed_path):
+            os.remove(processed_path)
