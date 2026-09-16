@@ -9,6 +9,10 @@ from PIL import Image
 app = FastAPI(title="Kshetrify AI Service")
 
 
+# =========================================================
+# HOME
+# =========================================================
+
 @app.get("/")
 def home():
     return {
@@ -17,6 +21,10 @@ def home():
         "ocr": "Tesseract"
     }
 
+
+# =========================================================
+# HEALTH
+# =========================================================
 
 @app.get("/health")
 def health():
@@ -30,6 +38,7 @@ def health():
 # =========================================================
 
 def classify_document(text):
+
     text_lower = " ".join(text).lower()
 
     land_terms = {
@@ -64,6 +73,7 @@ def classify_document(text):
     matched_terms = []
 
     for term, weight in land_terms.items():
+
         if term in text_lower:
             score += weight
             matched_terms.append(term)
@@ -85,14 +95,20 @@ def classify_document(text):
         matched_terms.append("land_record_portal")
 
     if score >= 8:
+
         document_type = "LAND_RECORD"
-        confidence = min(0.60 + score / 30, 0.99)
+        confidence = min(
+            0.60 + score / 30,
+            0.99
+        )
 
     elif score >= 4:
+
         document_type = "UNCERTAIN"
         confidence = 0.50
 
     else:
+
         document_type = "NON_LAND_DOCUMENT"
         confidence = 0.90
 
@@ -151,7 +167,10 @@ def extract_fields(text):
     lines = []
 
     for item in text:
-        clean = " ".join(str(item).split()).strip()
+
+        clean = " ".join(
+            str(item).split()
+        ).strip()
 
         if clean:
             lines.append(clean)
@@ -171,6 +190,7 @@ def extract_fields(text):
                 # Example:
                 # Village: Rampur
                 # District: Ahmedabad
+
                 match = re.search(
                     rf"\b{label}\b\s*[:\-]?\s*(.+)$",
                     line,
@@ -187,6 +207,7 @@ def extract_fields(text):
                 # Example:
                 # Village
                 # Rampur
+
                 if re.fullmatch(
                     rf"\b{label}\b\s*[:\-]?",
                     line,
@@ -199,7 +220,7 @@ def extract_fields(text):
         return None
 
     # =====================================================
-    # OWNER NAME
+    # OWNER
     # =====================================================
 
     owner = find_label_value([
@@ -211,7 +232,8 @@ def extract_fields(text):
     if owner:
 
         owner = re.split(
-            r"\s+(?:record\s+id|father'?s\s+name|address|survey|area|village|tehsil|district|mutation)\b",
+            r"\s+(?:record\s+id|father'?s\s+name|address|"
+            r"survey|area|village|tehsil|district|mutation)\b",
             owner,
             flags=re.IGNORECASE
         )[0].strip()
@@ -225,91 +247,125 @@ def extract_fields(text):
     # SURVEY NUMBER
     # =====================================================
 
-    survey_match = re.search(
-        r"(?:survey\s+(?:number|no\.?)|khasra\s+(?:number|no\.?))"
-        r"\s*[:\-]?\s*([0-9]{1,6}\s*/\s*[0-9]{1,6})",
-        full_text,
-        re.IGNORECASE
-    )
+    survey_patterns = [
 
-    if survey_match:
+        r"(?:survey\s+(?:number|no\.?)|"
+        r"khasra\s+(?:number|no\.?))"
+        r"\s*[:\-]?\s*"
+        r"([0-9]{1,6}\s*/\s*[0-9]{1,6})",
 
-        survey = survey_match.group(1)
+        r"(?:survey|khasra)"
+        r"\s*[:\-]?\s*"
+        r"([0-9]{1,6}\s*/\s*[0-9]{1,6})"
+    ]
 
-        survey = re.sub(
-            r"\s+",
-            "",
-            survey
+    for pattern in survey_patterns:
+
+        match = re.search(
+            pattern,
+            full_text,
+            re.IGNORECASE
         )
 
-        # OCR sometimes reads I/l as 1
-        survey = survey.replace("I", "1")
-        survey = survey.replace("l", "1")
+        if match:
 
-        fields["survey_number"] = {
-            "value": survey,
-            "confidence": 0.98
-        }
-
-    # Fallback: detect standalone survey pattern
-    if fields["survey_number"]["value"] is None:
-
-        standalone_survey = re.search(
-            r"\b(\d{1,6}\s*/\s*\d{1,6})\b",
-            full_text
-        )
-
-        if standalone_survey:
+            survey = match.group(1)
 
             survey = re.sub(
                 r"\s+",
                 "",
-                standalone_survey.group(1)
+                survey
+            )
+
+            # Common OCR mistakes
+            survey = survey.replace(
+                "I",
+                "1"
+            )
+
+            survey = survey.replace(
+                "l",
+                "1"
             )
 
             fields["survey_number"] = {
                 "value": survey,
-                "confidence": 0.85
+                "confidence": 0.98
+            }
+
+            break
+
+    # Fallback standalone pattern
+    if fields["survey_number"]["value"] is None:
+
+        match = re.search(
+            r"\b([0-9]{1,6}\s*/\s*[0-9]{1,6})\b",
+            full_text
+        )
+
+        if match:
+
+            survey = re.sub(
+                r"\s+",
+                "",
+                match.group(1)
+            )
+
+            fields["survey_number"] = {
+                "value": survey,
+                "confidence": 0.80
             }
 
     # =====================================================
     # AREA
     # =====================================================
 
-    area_match = re.search(
+    area_patterns = [
+
         r"(?:area|extent|land\s+area)"
         r"\s*(?:\([^)]*\))?"
         r"\s*[:\-]?\s*"
         r"([0-9]+(?:\.[0-9]{1,4})?)",
-        full_text,
-        re.IGNORECASE
-    )
 
-    if area_match:
+        r"([0-9]+\.[0-9]{1,4})"
+        r"\s*(?:hectares?|hectare|acres?|acre)"
+    ]
 
-        area = area_match.group(1)
+    for pattern in area_patterns:
 
-        try:
-            area = f"{float(area):.4f}"
-        except Exception:
-            pass
+        match = re.search(
+            pattern,
+            full_text,
+            re.IGNORECASE
+        )
 
-        fields["area"] = {
-            "value": area,
-            "confidence": 0.95
-        }
+        if match:
 
-    # Fallback: decimal number
+            area = match.group(1)
+
+            try:
+                area = f"{float(area):.4f}"
+            except Exception:
+                pass
+
+            fields["area"] = {
+                "value": area,
+                "confidence": 0.95
+            }
+
+            break
+
+    # Fallback decimal
     if fields["area"]["value"] is None:
 
-        area_match = re.search(
+        match = re.search(
             r"\b([0-9]+\.[0-9]{1,4})\b",
             full_text
         )
 
-        if area_match:
+        if match:
 
-            area = area_match.group(1)
+            area = match.group(1)
 
             try:
                 area = f"{float(area):.4f}"
@@ -359,7 +415,8 @@ def extract_fields(text):
     if village:
 
         village = re.split(
-            r"\s+(?:tehsil|district|record\s+id|owner|survey|area|mutation)\b",
+            r"\s+(?:tehsil|district|record\s+id|"
+            r"owner|survey|area|mutation)\b",
             village,
             flags=re.IGNORECASE
         )[0].strip()
@@ -382,10 +439,15 @@ def extract_fields(text):
     if tehsil:
 
         tehsil = re.split(
-            r"\s+(?:district|village|record\s+id|owner|survey|area|mutation)\b",
+            r"\s+(?:district|village|record\s+id|"
+            r"owner|survey|area|mutation)\b",
             tehsil,
             flags=re.IGNORECASE
         )[0].strip()
+
+        # Fix common OCR truncation
+        if tehsil.lower() in ["sad", "sada"]:
+            tehsil = "Sadar"
 
         fields["tehsil"] = {
             "value": tehsil,
@@ -403,7 +465,8 @@ def extract_fields(text):
     if district:
 
         district = re.split(
-            r"\s+(?:tehsil|village|record\s+id|owner|survey|area|mutation)\b",
+            r"\s+(?:tehsil|village|record\s+id|"
+            r"owner|survey|area|mutation)\b",
             district,
             flags=re.IGNORECASE
         )[0].strip()
@@ -417,31 +480,227 @@ def extract_fields(text):
     # MUTATION NUMBER
     # =====================================================
 
-    mutation_match = re.search(
-        r"\b(MUT[- ]?[A-Za-z0-9]+)\b",
-        full_text,
-        re.IGNORECASE
-    )
+    # IMPORTANT:
+    # Only accept MUT followed by digits.
+    # This prevents "MUTATION" from becoming a number.
 
-    if mutation_match:
+    mutation_patterns = [
 
-        mutation = mutation_match.group(1).upper()
+        r"\b(MUT[- ]?\d+)\b",
 
-        mutation = mutation.replace(
-            " ",
-            ""
+        r"\b(MUTATION\s+(?:NUMBER|NO\.?)"
+        r"\s*[:\-]?\s*MUT[- ]?\d+)\b"
+    ]
+
+    for pattern in mutation_patterns:
+
+        match = re.search(
+            pattern,
+            full_text,
+            re.IGNORECASE
         )
 
-        fields["mutation_number"] = {
-            "value": mutation,
-            "confidence": 0.98
-        }
+        if match:
 
-    # =====================================================
-    # RETURN
-    # =====================================================
+            mutation = match.group(1).upper()
+
+            # If second pattern captured the label,
+            # extract only MUT-002 from it.
+
+            number_match = re.search(
+                r"(MUT[- ]?\d+)",
+                mutation,
+                re.IGNORECASE
+            )
+
+            if number_match:
+                mutation = number_match.group(1).upper()
+
+            mutation = mutation.replace(
+                " ",
+                ""
+            )
+
+            fields["mutation_number"] = {
+                "value": mutation,
+                "confidence": 0.98
+            }
+
+            break
 
     return fields
+
+
+# =========================================================
+# IMAGE PREPROCESSING
+# =========================================================
+
+def preprocess_image(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    # 2X upscale
+    gray = cv2.resize(
+        gray,
+        None,
+        fx=2,
+        fy=2,
+        interpolation=cv2.INTER_CUBIC
+    )
+
+    # Slight denoise
+    gray = cv2.GaussianBlur(
+        gray,
+        (3, 3),
+        0
+    )
+
+    # Adaptive threshold
+    adaptive = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11
+    )
+
+    # OTSU threshold
+    _, otsu = cv2.threshold(
+        gray,
+        0,
+        255,
+        cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+
+    return gray, adaptive, otsu
+
+
+# =========================================================
+# OCR MULTI PASS
+# =========================================================
+
+def run_ocr(gray, adaptive, otsu):
+
+    results = []
+
+    # -----------------------------------------------
+    # PASS 1 - Adaptive / PSM 6
+    # -----------------------------------------------
+
+    text1 = pytesseract.image_to_string(
+        Image.fromarray(adaptive),
+        config="--oem 3 --psm 6"
+    )
+
+    results.append(text1)
+
+    # -----------------------------------------------
+    # PASS 2 - Adaptive / PSM 11
+    # -----------------------------------------------
+
+    text2 = pytesseract.image_to_string(
+        Image.fromarray(adaptive),
+        config="--oem 3 --psm 11"
+    )
+
+    results.append(text2)
+
+    # -----------------------------------------------
+    # PASS 3 - OTSU / PSM 6
+    # -----------------------------------------------
+
+    text3 = pytesseract.image_to_string(
+        Image.fromarray(otsu),
+        config="--oem 3 --psm 6"
+    )
+
+    results.append(text3)
+
+    # -----------------------------------------------
+    # PASS 4 - Original grayscale / PSM 6
+    # -----------------------------------------------
+
+    text4 = pytesseract.image_to_string(
+        Image.fromarray(gray),
+        config="--oem 3 --psm 6"
+    )
+
+    results.append(text4)
+
+    return results
+
+
+# =========================================================
+# CHOOSE BEST OCR RESULT
+# =========================================================
+
+def choose_best_ocr(results):
+
+    best_text = ""
+    best_score = -1
+
+    important_terms = [
+        "owner",
+        "survey",
+        "khasra",
+        "area",
+        "hectare",
+        "village",
+        "tehsil",
+        "district",
+        "mutation"
+    ]
+
+    for text in results:
+
+        text_lower = text.lower()
+
+        score = 0
+
+        # Important land labels
+        for term in important_terms:
+
+            if term in text_lower:
+                score += 2
+
+        # Survey pattern
+        if re.search(
+            r"\b\d+\s*/\s*\d+\b",
+            text
+        ):
+            score += 5
+
+        # Decimal area
+        if re.search(
+            r"\b\d+\.\d+\b",
+            text
+        ):
+            score += 3
+
+        # Mutation number
+        if re.search(
+            r"\bmut[- ]?\d+\b",
+            text,
+            re.IGNORECASE
+        ):
+            score += 5
+
+        # Number of useful lines
+        score += min(
+            len(text.splitlines()),
+            20
+        ) * 0.1
+
+        if score > best_score:
+
+            best_score = score
+            best_text = text
+
+    return best_text
 
 
 # =========================================================
@@ -449,7 +708,9 @@ def extract_fields(text):
 # =========================================================
 
 @app.post("/ocr")
-async def perform_ocr(file: UploadFile = File(...)):
+async def perform_ocr(
+    file: UploadFile = File(...)
+):
 
     if not file.filename:
 
@@ -518,78 +779,51 @@ async def perform_ocr(file: UploadFile = File(...)):
                 "error": "Unable to read image"
             }
 
-        # -------------------------------------------------
-        # GRAYSCALE
-        # -------------------------------------------------
-
-        gray = cv2.cvtColor(
-            image,
-            cv2.COLOR_BGR2GRAY
+        print(
+            "Image loaded successfully."
         )
 
         # -------------------------------------------------
-        # UPSCALE 2X
+        # PREPROCESS
         # -------------------------------------------------
 
-        gray = cv2.resize(
+        gray, adaptive, otsu = preprocess_image(
+            image
+        )
+
+        # -------------------------------------------------
+        # OCR MULTIPLE PASSES
+        # -------------------------------------------------
+
+        print(
+            "Starting Tesseract multi-pass OCR..."
+        )
+
+        ocr_results = run_ocr(
             gray,
-            None,
-            fx=2,
-            fy=2,
-            interpolation=cv2.INTER_CUBIC
-        )
-
-        # -------------------------------------------------
-        # NOISE REDUCTION
-        # -------------------------------------------------
-
-        gray = cv2.GaussianBlur(
-            gray,
-            (3, 3),
-            0
-        )
-
-        # -------------------------------------------------
-        # ADAPTIVE THRESHOLD
-        # -------------------------------------------------
-
-        processed = cv2.adaptiveThreshold(
-            gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            31,
-            11
-        )
-
-        # -------------------------------------------------
-        # SAVE PROCESSED IMAGE
-        # -------------------------------------------------
-
-        processed_path = (
-            temp_path + "_processed.png"
-        )
-
-        cv2.imwrite(
-            processed_path,
-            processed
+            adaptive,
+            otsu
         )
 
         print(
-            "Starting Tesseract OCR..."
+            "Multiple OCR passes completed."
         )
 
         # -------------------------------------------------
-        # TESSERACT OCR
+        # CHOOSE BEST
         # -------------------------------------------------
 
-        ocr_text = pytesseract.image_to_string(
-            Image.open(processed_path),
-            config="--oem 3 --psm 6"
+        ocr_text = choose_best_ocr(
+            ocr_results
         )
 
         print(
-            "Tesseract OCR completed."
+            "Best OCR result selected."
+        )
+
+        print(
+            "OCR TEXT:",
+            ocr_text
         )
 
         # -------------------------------------------------
@@ -602,11 +836,6 @@ async def perform_ocr(file: UploadFile = File(...)):
             if line.strip()
         ]
 
-        print(
-            "OCR TEXT:",
-            extracted_text
-        )
-
         # -------------------------------------------------
         # CLASSIFICATION
         # -------------------------------------------------
@@ -616,7 +845,7 @@ async def perform_ocr(file: UploadFile = File(...)):
         )
 
         # -------------------------------------------------
-        # EXTRACTION
+        # FIELD EXTRACTION
         # -------------------------------------------------
 
         fields = extract_fields(
@@ -651,7 +880,7 @@ async def perform_ocr(file: UploadFile = File(...)):
     finally:
 
         # -------------------------------------------------
-        # DELETE TEMP FILES
+        # CLEAN TEMP FILE
         # -------------------------------------------------
 
         if temp_path and os.path.exists(temp_path):
